@@ -98,3 +98,24 @@ def english_cleaners2(text):
   phonemes = phonemize(text, language='en-us', backend='espeak', strip=True, preserve_punctuation=True, with_stress=True)
   phonemes = collapse_whitespace(phonemes)
   return phonemes
+
+
+import re
+from unidecode import unidecode
+
+_whitespace_re = re.compile(r'\s+')
+
+def spanish_cleaners(text):
+    """
+    Limpia y normaliza texto en español:
+    - Convierte a minúsculas.
+    - Elimina signos de puntuación no esenciales.
+    - Convierte caracteres con acentos a su forma base.
+    - Normaliza espacios.
+    """
+    text = text.lower()
+    text = unidecode(text)  # Convierte caracteres acentuados a su versión básica.
+    text = re.sub(r'[^\w\s]', '', text)  # Elimina caracteres no alfabéticos.
+    text = _whitespace_re.sub(' ', text)  # Normaliza espacios múltiples.
+    text = text.strip()
+    return text

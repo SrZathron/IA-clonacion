@@ -67,12 +67,14 @@ def summarize(writer, global_step, scalars={}, histograms={}, images={}, audios=
     writer.add_audio(k, v, global_step, audio_sampling_rate)
 
 
-def latest_checkpoint_path(dir_path, regex="G_*.pth"):
-  f_list = glob.glob(os.path.join(dir_path, regex))
-  f_list.sort(key=lambda f: int("".join(filter(str.isdigit, f))))
-  x = f_list[-1]
-  print(x)
-  return x
+def latest_checkpoint_path(dir_path, pattern):
+    import glob
+    f_list = glob.glob(os.path.join(dir_path, pattern))
+    f_list.sort()
+    if not f_list:
+        print(f"[WARNING] No se encontraron archivos que coincidan con el patrón {pattern} en {dir_path}.")
+        return None
+    return f_list[-1]
 
 
 def plot_spectrogram_to_numpy(spectrogram):
