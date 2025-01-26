@@ -1,5 +1,6 @@
 import argparse
 import text
+import os
 from utils import load_filepaths_and_text
 
 if __name__ == '__main__':
@@ -10,8 +11,11 @@ if __name__ == '__main__':
   parser.add_argument("--text_cleaners", nargs="+", default=["english_cleaners2"])
 
   args = parser.parse_args()
-    
-
+  
+  def validate_file_paths(file_path):
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"El archivo no existe: {file_path}")
+        
   for filelist in args.filelists:
     print("START:", filelist)
     filepaths_and_text = load_filepaths_and_text(filelist)

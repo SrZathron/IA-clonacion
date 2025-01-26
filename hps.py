@@ -6,10 +6,10 @@ class HParams:
             "eval_interval": 1000,
             "seed": 1234,
             "epochs": 20000,
-            "learning_rate": 0.0002,
+            "learning_rate": 0.0001,
             "betas": [0.8, 0.99],
             "eps": 1e-09,
-            "batch_size": 64,
+            "batch_size": 32,
             "fp16_run": True,
             "lr_decay": 0.999875,
             "segment_size": 8192,
@@ -63,7 +63,7 @@ class HParams:
         }
 
         # Directorio del modelo
-        self.model_dir = "./logs/ljs_model"
+        self.model_dir = "/content/drive/MyDrive/vits/logs/ljs_model"
 
 
 # Instancia de configuración

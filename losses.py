@@ -32,16 +32,11 @@ def discriminator_loss(disc_real_outputs, disc_generated_outputs):
 
 
 def generator_loss(disc_outputs):
-  loss = 0
-  gen_losses = []
-  for dg in disc_outputs:
-    dg = dg.float()
-    l = torch.mean((1-dg)**2)
-    gen_losses.append(l)
-    loss += l
-
-  return loss, gen_losses
-
+    loss = 0
+    for dg in disc_outputs:
+        dg = dg.float()
+        loss += torch.mean((1-dg)**2)
+    return loss
 
 def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
   """
