@@ -3,13 +3,13 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 import commons
 import utils
 from data_utils import TextAudioLoader, TextAudioCollate
 from models import SynthesizerTrn, MultiPeriodDiscriminator
-from losses import generator_loss
+from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from text.symbols import symbols
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -24,6 +24,20 @@ def main():
     model_dir = "/content/drive/MyDrive/vits/logs/ljs_model"
     os.makedirs(model_dir, exist_ok=True)
     os.makedirs(os.path.join(model_dir, "eval"), exist_ok=True)
+
+    # Verify filelists
+    train_file = "/content/drive/MyDrive/vits/filelists/ljs_audio_text_train_filelist.txt.cleaned"
+    val_file = "/content/drive/MyDrive/vits/filelists/ljs_audio_text_val_filelist.txt.cleaned"
+
+    if not os.path.exists(train_file):
+        raise FileNotFoundError(f"Training filelist not found: {train_file}")
+    if not os.path.exists(val_file):
+        raise FileNotFoundError(f"Validation filelist not found: {val_file}")
+
+    print("Filelists found and verified.")
+
+    # Check CUDA availability
+    print(torch.cuda.get_device_name(0))
 
     hps = utils.get_hparams()
     hps.model_dir = model_dir
@@ -47,7 +61,7 @@ def run(rank, hps):
         train_dataset,
         batch_size=hps.train.batch_size,
         shuffle=True,
-        num_workers=2,  # Reducido para evitar problemas en Colab
+        num_workers=1,  # Reducido para evitar problemas en Colab
         pin_memory=True,
         collate_fn=TextAudioCollate(),
     )
@@ -112,6 +126,10 @@ def run(rank, hps):
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
+    # Start TensorBoard for monitoring
+    print("Starting TensorBoard...")
+    os.system(f"tensorboard --logdir={hps.model_dir} --bind_all &")
+
     for epoch in range(epoch_str, hps.train.epochs + 1):
         train_and_evaluate(
             epoch,
@@ -125,6 +143,20 @@ def run(rank, hps):
             [writer, writer_eval],
         )
 
+        # Guardar checkpoints después de cada época
+        torch.save({
+            'model_state_dict': net_g.state_dict(),
+            'optimizer_state_dict': optim_g.state_dict(),
+            'epoch': epoch
+        }, os.path.join(hps.model_dir, f'G_{epoch}.pth'))
+
+        torch.save({
+            'model_state_dict': net_d.state_dict(),
+            'optimizer_state_dict': optim_d.state_dict(),
+            'epoch': epoch
+        }, os.path.join(hps.model_dir, f'D_{epoch}.pth'))
+
+        # Actualizar los programadores de tasa de aprendizaje
         scheduler_g.step()
         scheduler_d.step()
 
@@ -153,14 +185,13 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler, loaders, lo
         scaler.update()
         optim_g.zero_grad()
 
-        logger.info(f"Train Step {global_step}, Epoch {epoch}, Batch {batch_idx}, Loss: {loss_g.item()}")
+        logger.info(f"Epoch {epoch}, Batch {batch_idx}, Loss G: {loss_g.item()}")
         writer.add_scalar("Loss/train", loss_g.item(), global_step)
 
         global_step += 1
 
+    # Registro en evaluación
     net_g.eval()
-    net_d.eval()
-
     with torch.no_grad():
         for batch_idx, (x, x_lengths, spec, spec_lengths, y, y_lengths) in enumerate(eval_loader):
             x, x_lengths = x.cuda(non_blocking=True), x_lengths.cuda(non_blocking=True)
@@ -169,9 +200,10 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler, loaders, lo
 
             with autocast(device_type="cuda", enabled=hps.train.fp16_run):
                 y_hat, *_ = net_g(x, x_lengths, spec, spec_lengths)
+                loss_g_eval = generator_loss(y_hat, y)
 
-            logger.info(f"Eval Step {global_step}, Epoch {epoch}, Batch {batch_idx}")
-            writer_eval.add_scalar("Loss/eval", loss_g.item(), global_step)
+            writer_eval.add_scalar("Loss/eval", loss_g_eval.item(), global_step)
+            logger.info(f"Eval Epoch {epoch}, Batch {batch_idx}, Loss G Eval: {loss_g_eval.item()}")
 
 if __name__ == "__main__":
     main()
