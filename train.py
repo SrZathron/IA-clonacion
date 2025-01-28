@@ -1,4 +1,5 @@
 import os
+import subprocess
 import torch
 from torch import optim
 from torch.utils.data import DataLoader
@@ -11,11 +12,28 @@ from data_utils import TextAudioLoader, TextAudioCollate
 from models import SynthesizerTrn, MultiPeriodDiscriminator
 from losses import generator_loss, discriminator_loss, feature_loss, kl_loss
 from text.symbols import symbols
+from pyngrok import ngrok
+import threading
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 
 global_step = 0
+
+def start_tensorboard(logdir, port=6006):
+    """Inicia TensorBoard con ngrok para Colab."""
+    # Libera el puerto 6006 en caso de estar ocupado
+    os.system("fuser -k 6006/tcp")
+    
+    # Inicia TensorBoard en segundo plano
+    os.system(f"tensorboard --logdir {logdir} --port {port} &")
+    
+    # Conecta ngrok al puerto
+    try:
+        public_url = ngrok.connect(port)
+        print(f"TensorBoard está disponible públicamente en: {public_url}")
+    except Exception as e:
+        print(f"Error al iniciar ngrok: {e}")
 
 def main():
     assert torch.cuda.is_available(), "CUDA GPU is required for training."
@@ -41,7 +59,14 @@ def main():
 
     hps = utils.get_hparams()
     hps.model_dir = model_dir
+
+    # Inicia TensorBoard antes de empezar el entrenamiento
+    print("Iniciando TensorBoard...")
+    start_tensorboard(hps.model_dir, port=6006)
+    print("TensorBoard iniciado. Continúa con el entrenamiento.")
+
     run(0, hps)
+
 
 def run(rank, hps):
     global global_step
@@ -126,10 +151,6 @@ def run(rank, hps):
 
     scaler = GradScaler(enabled=hps.train.fp16_run)
 
-    # Start TensorBoard for monitoring
-    print("Starting TensorBoard...")
-    os.system(f"tensorboard --logdir={hps.model_dir} --bind_all &")
-
     for epoch in range(epoch_str, hps.train.epochs + 1):
         train_and_evaluate(
             epoch,
@@ -159,6 +180,7 @@ def run(rank, hps):
         # Actualizar los programadores de tasa de aprendizaje
         scheduler_g.step()
         scheduler_d.step()
+
 
 def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler, loaders, logger, writers):
     global global_step
@@ -205,5 +227,8 @@ def train_and_evaluate(epoch, hps, nets, optims, schedulers, scaler, loaders, lo
             writer_eval.add_scalar("Loss/eval", loss_g_eval.item(), global_step)
             logger.info(f"Eval Epoch {epoch}, Batch {batch_idx}, Loss G Eval: {loss_g_eval.item()}")
 
+
 if __name__ == "__main__":
+    logdir = "/content/drive/MyDrive/vits/logs/ljs_model"
+    threading.Thread(target=start_tensorboard, args=(logdir, 6006), daemon=True).start()
     main()
