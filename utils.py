@@ -1,260 +1,100 @@
 import os
-import glob
-import sys
-import argparse
-import logging
 import json
-import subprocess
-import numpy as np
-from scipy.io.wavfile import read
+import logging
 import torch
 
-MATPLOTLIB_FLAG = False
+# Configuración inicial del logger
+logger = logging.getLogger(__name__)
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
-logger = logging
+def setup_logger():
+    """Configura el sistema de logging para Colab"""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    
+    # Formato personalizado con emojis
+    formatter = logging.Formatter(
+        '[%(asctime)s] %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Handler para Colab
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    
+    # Limpiar handlers existentes y añadir nuevo
+    logger.handlers = []
+    logger.addHandler(handler)
+    
+    return logger
 
+def get_hparams():
+    """Carga y ajusta hiperparámetros con validación mejorada"""
+    config_path = "/content/drive/MyDrive/vits/configs/ljs_base.json"
+    
+    try:
+        with open(config_path, 'r') as f:
+            hparams = json.load(f)
+            
+        # Ajustes automáticos para diferentes GPUs
+        gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''
+        hparams['train']['batch_size'] = 4 if 'T4' in gpu_name else 8
+        
+        # Validación de parámetros esenciales
+        required_keys = ['data', 'train', 'model']
+        for key in required_keys:
+            if key not in hparams:
+                raise KeyError(f"Falta sección crítica en config: {key}")
+                
+        return hparams
+        
+    except FileNotFoundError:
+        logger.critical(f"🚨 Archivo de configuración no encontrado: {config_path}")
+        raise
+    except json.JSONDecodeError:
+        logger.critical("🚨 Error de formato en el archivo de configuración")
+        raise
 
 def load_checkpoint(checkpoint_path, model, optimizer=None):
-  assert os.path.isfile(checkpoint_path)
-  checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
-  iteration = checkpoint_dict['iteration']
-  learning_rate = checkpoint_dict['learning_rate']
-  if optimizer is not None:
-    optimizer.load_state_dict(checkpoint_dict['optimizer'])
-  saved_state_dict = checkpoint_dict['model']
-  if hasattr(model, 'module'):
-    state_dict = model.module.state_dict()
-  else:
-    state_dict = model.state_dict()
-  new_state_dict= {}
-  for k, v in state_dict.items():
+    """Carga segura de checkpoints con manejo de errores mejorado"""
     try:
-      new_state_dict[k] = saved_state_dict[k]
-    except:
-      logger.info("%s is not in the checkpoint" % k)
-      new_state_dict[k] = v
-  if hasattr(model, 'module'):
-    model.module.load_state_dict(new_state_dict)
-  else:
-    model.load_state_dict(new_state_dict)
-  logger.info("Loaded checkpoint '{}' (iteration {})" .format(
-    checkpoint_path, iteration))
-  return model, optimizer, learning_rate, iteration
+        # Carga segura con weights_only=True
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+            weights_only=True
+        )
+        
+        # Cargar estados
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if optimizer and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            
+        epoch = checkpoint.get('epoch', 0)
+        logger.info(f"♻️ Checkpoint cargado: {os.path.basename(checkpoint_path)}")
+        return model, optimizer, epoch
+        
+    except FileNotFoundError:
+        logger.warning(f"⚠️ Checkpoint no encontrado: {checkpoint_path}")
+        return model, optimizer, 0
+    except Exception as e:
+        logger.error(f"❌ Error crítico al cargar checkpoint: {str(e)}")
+        raise
 
-
-def save_checkpoint(model, optimizer, learning_rate, iteration, checkpoint_path):
-  logger.info("Saving model and optimizer state at iteration {} to {}".format(
-    iteration, checkpoint_path))
-  if hasattr(model, 'module'):
-    state_dict = model.module.state_dict()
-  else:
-    state_dict = model.state_dict()
-  torch.save({'model': state_dict,
-              'iteration': iteration,
-              'optimizer': optimizer.state_dict(),
-              'learning_rate': learning_rate}, checkpoint_path)
-
-
-def summarize(writer, global_step, scalars={}, histograms={}, images={}, audios={}, audio_sampling_rate=22050):
-  for k, v in scalars.items():
-    writer.add_scalar(k, v, global_step)
-  for k, v in histograms.items():
-    writer.add_histogram(k, v, global_step)
-  for k, v in images.items():
-    writer.add_image(k, v, global_step, dataformats='HWC')
-  for k, v in audios.items():
-    writer.add_audio(k, v, global_step, audio_sampling_rate)
-
-
-def latest_checkpoint_path(dir_path, pattern):
-    import glob
-    f_list = glob.glob(os.path.join(dir_path, pattern))
-    f_list.sort()
-    if not f_list:
-        print(f"[WARNING] No se encontraron archivos que coincidan con el patrón {pattern} en {dir_path}.")
-        return None
-    return f_list[-1]
-
-
-def plot_spectrogram_to_numpy(spectrogram):
-  global MATPLOTLIB_FLAG
-  if not MATPLOTLIB_FLAG:
-    import matplotlib
-    matplotlib.use("Agg")
-    MATPLOTLIB_FLAG = True
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)
-  import matplotlib.pylab as plt
-  import numpy as np
-  
-  fig, ax = plt.subplots(figsize=(10,2))
-  im = ax.imshow(spectrogram, aspect="auto", origin="lower",
-                  interpolation='none')
-  plt.colorbar(im, ax=ax)
-  plt.xlabel("Frames")
-  plt.ylabel("Channels")
-  plt.tight_layout()
-
-  fig.canvas.draw()
-  data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
-  data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-  plt.close()
-  return data
-
-
-def plot_alignment_to_numpy(alignment, info=None):
-  global MATPLOTLIB_FLAG
-  if not MATPLOTLIB_FLAG:
-    import matplotlib
-    matplotlib.use("Agg")
-    MATPLOTLIB_FLAG = True
-    mpl_logger = logging.getLogger('matplotlib')
-    mpl_logger.setLevel(logging.WARNING)
-  import matplotlib.pylab as plt
-  import numpy as np
-
-  fig, ax = plt.subplots(figsize=(6, 4))
-  im = ax.imshow(alignment.transpose(), aspect='auto', origin='lower',
-                  interpolation='none')
-  fig.colorbar(im, ax=ax)
-  xlabel = 'Decoder timestep'
-  if info is not None:
-      xlabel += '\n\n' + info
-  plt.xlabel(xlabel)
-  plt.ylabel('Encoder timestep')
-  plt.tight_layout()
-
-  fig.canvas.draw()
-  data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
-  data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-  plt.close()
-  return data
-
-
-def load_wav_to_torch(full_path):
-  sampling_rate, data = read(full_path)
-  return torch.FloatTensor(data.astype(np.float32)), sampling_rate
-
-
-def load_filepaths_and_text(filename, split="|"):
-  with open(filename, encoding='utf-8') as f:
-    filepaths_and_text = [line.strip().split(split) for line in f]
-  return filepaths_and_text
-
-
-def get_hparams(init=True):
-  parser = argparse.ArgumentParser()
-  parser.add_argument('-c', '--config', type=str, default="./configs/base.json",
-                      help='JSON file for configuration')
-  parser.add_argument('-m', '--model', type=str, required=True,
-                      help='Model name')
-  
-  args = parser.parse_args()
-  model_dir = os.path.join("./logs", args.model)
-
-  if not os.path.exists(model_dir):
-    os.makedirs(model_dir)
-
-  config_path = args.config
-  config_save_path = os.path.join(model_dir, "config.json")
-  if init:
-    with open(config_path, "r") as f:
-      data = f.read()
-    with open(config_save_path, "w") as f:
-      f.write(data)
-  else:
-    with open(config_save_path, "r") as f:
-      data = f.read()
-  config = json.loads(data)
-  
-  hparams = HParams(**config)
-  hparams.model_dir = model_dir
-  return hparams
-
-
-def get_hparams_from_dir(model_dir):
-  config_save_path = os.path.join(model_dir, "config.json")
-  with open(config_save_path, "r") as f:
-    data = f.read()
-  config = json.loads(data)
-
-  hparams =HParams(**config)
-  hparams.model_dir = model_dir
-  return hparams
-
-
-def get_hparams_from_file(config_path):
-  with open(config_path, "r") as f:
-    data = f.read()
-  config = json.loads(data)
-
-  hparams =HParams(**config)
-  return hparams
-
-
-def check_git_hash(model_dir):
-  source_dir = os.path.dirname(os.path.realpath(__file__))
-  if not os.path.exists(os.path.join(source_dir, ".git")):
-    logger.warn("{} is not a git repository, therefore hash value comparison will be ignored.".format(
-      source_dir
-    ))
-    return
-
-  cur_hash = subprocess.getoutput("git rev-parse HEAD")
-
-  path = os.path.join(model_dir, "githash")
-  if os.path.exists(path):
-    saved_hash = open(path).read()
-    if saved_hash != cur_hash:
-      logger.warn("git hash values are different. {}(saved) != {}(current)".format(
-        saved_hash[:8], cur_hash[:8]))
-  else:
-    open(path, "w").write(cur_hash)
-
-
-def get_logger(model_dir, filename="train.log"):
-  global logger
-  logger = logging.getLogger(os.path.basename(model_dir))
-  logger.setLevel(logging.DEBUG)
-  
-  formatter = logging.Formatter("%(asctime)s\t%(name)s\t%(levelname)s\t%(message)s")
-  if not os.path.exists(model_dir):
-    os.makedirs(model_dir)
-  h = logging.FileHandler(os.path.join(model_dir, filename))
-  h.setLevel(logging.DEBUG)
-  h.setFormatter(formatter)
-  logger.addHandler(h)
-  return logger
-
-
-class HParams():
-  def __init__(self, **kwargs):
-    for k, v in kwargs.items():
-      if type(v) == dict:
-        v = HParams(**v)
-      self[k] = v
-    
-  def keys(self):
-    return self.__dict__.keys()
-
-  def items(self):
-    return self.__dict__.items()
-
-  def values(self):
-    return self.__dict__.values()
-
-  def __len__(self):
-    return len(self.__dict__)
-
-  def __getitem__(self, key):
-    return getattr(self, key)
-
-  def __setitem__(self, key, value):
-    return setattr(self, key, value)
-
-  def __contains__(self, key):
-    return key in self.__dict__
-
-  def __repr__(self):
-    return self.__dict__.__repr__()
+def save_checkpoint(model, optimizer, epoch, path):
+    """Guardado robusto de checkpoints con creación de directorios"""
+    try:
+        # Crear directorio si no existe
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        # Guardar con comprobación de seguridad
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict()
+        }, path)
+        
+        logger.info(f"💾 Checkpoint guardado exitosamente: {os.path.basename(path)}")
+        
+    except Exception as e:
+        logger.error(f"🔥 Error catastrófico al guardar checkpoint: {str(e)}")
+        raise

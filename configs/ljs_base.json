@@ -20,6 +20,8 @@
     "training_files": "/content/drive/MyDrive/vits/filelists/ljs_audio_text_train_filelist.txt.cleaned",
     "validation_files": "/content/drive/MyDrive/vits/filelists/ljs_audio_text_val_filelist.txt.cleaned",
     "text_cleaners": ["spanish_cleaners"],
+    "max_wav_length": 992250,  
+    "min_wav_length": 22050,   
     "max_wav_value": 32768.0,
     "sampling_rate": 22050,
     "filter_length": 1024,
