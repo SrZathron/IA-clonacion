@@ -62,13 +62,13 @@ def main():
             logger.info("🚀 Iniciando entrenamiento desde cero")
 
         # Datasets y collate
-        collate_fn = TextAudioCollate(hparams)  # Pasar hparams aquí
+        collate_fn = TextAudioCollate(hparams)
         train_dataset = TextAudioLoader(FILELIST_TRAIN, hparams)
         train_loader = DataLoader(
             train_dataset,
             batch_size=hparams['train']['batch_size'],
             collate_fn=collate_fn,
-            num_workers=4,
+            num_workers=2,
             pin_memory=True,
             persistent_workers=True,
             drop_last=True
@@ -84,13 +84,20 @@ def main():
             net_d.train()
             epoch_start = time.time()
             
-            for batch_idx, (audios, texts) in enumerate(train_loader):
-                audios = audios.to(device, non_blocking=True)
+            for batch_idx, (audios, audio_lengths, text_ids, text_lengths) in enumerate(train_loader):
+                audios = audios.to(device)
+                text_ids = text_ids.to(device)
+                text_lengths = text_lengths.to(device)
+                audio_lengths = audio_lengths.to(device)
                 
-                # Entrenamiento del Generador
-                with autocast(device_type="cuda", enabled=hparams['train']['fp16_run']):
-                    y_hat, l_length, attn, ids_slice = net_g(audios, texts)
-                    loss_g = generator_loss(y_hat, audios) + l_length
+                # Forward CORRECTO
+                y_hat, l_length, attn, ids_slice = net_g(
+                    x=text_ids, 
+                    x_lengths=text_lengths,
+                    y=audios,
+                    y_lengths=audio_lengths
+                )                    
+                loss_g = generator_loss(y_hat, audios) + l_length
                 
                 scaler.scale(loss_g).backward()
                 scaler.step(optim_g)
